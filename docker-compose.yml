@@ -1,0 +1,10 @@
+services:
+  spx-auditor:
+    build: .
+    container_name: spx-waybill-auditor
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      - PORT=8765
+      - HOST=0.0.0.0
