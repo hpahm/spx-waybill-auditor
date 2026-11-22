@@ -33,26 +33,21 @@ PROVINCES = [
     'Thanh Hóa', 'Tiền Giang', 'Trà Vinh',
     'Tuyên Quang', 'Vĩnh Long', 'Vĩnh Phúc', 'Yên Bái'
 ]
-
-# Regex for stripping administrative prefixes
 ADMIN_PREFIX_REGEX = re.compile(
     r'^(?:Phường|P\.?|Xã|X\.?|Thị\s*trấn|Thị\s*Trấn|TT\.?|Quận|Q\.?|Huyện|H\.?|Thị\s*xã|Thị\s*Xã|TX\.?|Thành\s*phố|Thành\s*Phố|TP\.?|Tỉnh)\s*',
     re.IGNORECASE
 )
 
-# Regex to capture Ward/Commune/Town level (excludes 'Thị xã' to prevent confusion with 'Xã')
 WARD_PATTERN = re.compile(
     r'(?:\bPhường|\bP\.?|\bThị\s*trấn|\bTT|(?<!thị\s)(?<!thị)\bxã|(?<!thị\s)(?<!thị)\bx\.)\s+([^,]+)',
     re.IGNORECASE
 )
 
-# Regex to capture District/Town/City level
 DISTRICT_PATTERN = re.compile(
     r'\b(Quận|Q\.?|Huyện|H\.?|Thị\s*xã|TX)\s+([^,]+)',
     re.IGNORECASE
 )
 
-# Regex to capture Province/Municipality
 PROV_REGEX_STR = r'(?:Tỉnh|Thành\s*phố|Thành\s*Phố|TP\.|TP)?\s*(?:' + '|'.join(
     r'\b' + re.escape(p) + r'\b' for p in sorted(PROVINCES, key=len, reverse=True)
 ) + r')'
@@ -60,7 +55,6 @@ PROV_PATTERN = re.compile(PROV_REGEX_STR, re.IGNORECASE)
 
 
 def remove_vietnamese_accents(text: str) -> str:
-    """Chuyển đổi chuỗi tiếng Việt có dấu thành không dấu."""
     text = unicodedata.normalize('NFD', text)
     text = re.sub(r'[\u0300-\u036f]', '', text)
     text = text.replace('đ', 'd').replace('Đ', 'D')
@@ -68,7 +62,6 @@ def remove_vietnamese_accents(text: str) -> str:
 
 
 def has_vietnamese_accents(text: str) -> bool:
-    """Kiểm tra xem chuỗi có chứa ký tự tiếng Việt có dấu hay không."""
     return bool(re.search(r'[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]', text, re.IGNORECASE))
 
 
@@ -97,7 +90,6 @@ def norm_text(s: str) -> str:
 
 
 def clean_admin_name(s: str) -> str:
-    """Loại bỏ tiền tố hành chính (Phường, Xã, Quận, Huyện...) để lấy tên riêng."""
     s = norm_text(s)
     s = ADMIN_PREFIX_REGEX.sub('', s).strip(' .,-')
     return s
@@ -123,11 +115,6 @@ def is_name_equal(name1: str, name2: str) -> bool:
 
 
 def extract_pages_from_pdf(pdf_path: str) -> List[str]:
-    """
-    Trích xuất từng trang PDF:
-    - Bước 1: Dùng pdftotext (nhanh, chính xác 100% cho file PDF có Text Layer).
-    - Bước 2: Tự động fallback sang OCR nếu file là ảnh scan hoặc ảnh chụp.
-    """
     try:
         raw_text = subprocess.check_output(
             ['pdftotext', pdf_path, '-'],
@@ -147,7 +134,6 @@ def extract_pages_from_pdf(pdf_path: str) -> List[str]:
 
 
 def _ocr_single_image(args: Tuple[int, str, str]) -> Tuple[int, str]:
-    """Helper worker chạy Tesseract OCR cho 1 trang ảnh."""
     idx, img_path, out_base = args
     try:
         subprocess.run(
@@ -166,10 +152,6 @@ def _ocr_single_image(args: Tuple[int, str, str]) -> Tuple[int, str]:
 
 
 def ocr_pdf(pdf_path: str) -> List[str]:
-    """
-    Fallback OCR sử dụng pdftoppm và tesseract đa luồng (Process/ThreadPool)
-    tối ưu hóa sử dụng đa nhân CPU khi PDF không có lớp chữ.
-    """
     with tempfile.TemporaryDirectory() as tmpdir:
         subprocess.run(['pdftoppm', '-png', '-r', '200', pdf_path, os.path.join(tmpdir, 'page')],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -177,7 +159,6 @@ def ocr_pdf(pdf_path: str) -> List[str]:
         if not img_files:
             return []
 
-        # Tận dụng đa nhân CPU (2-4 cores) để chạy OCR song song
         max_workers = min(4, os.cpu_count() or 2)
         tasks = [
             (i, os.path.join(tmpdir, img_name), os.path.join(tmpdir, f'ocr_{i}'))
@@ -192,10 +173,6 @@ def ocr_pdf(pdf_path: str) -> List[str]:
 
 
 def parse_page(page_text: str) -> Tuple[str, str, str]:
-    """
-    Trích xuất mã vận đơn SPXVN, tên người nhận và chuỗi địa chỉ đầy đủ từ 1 trang.
-    Returns: (tracking_code, recipient_name, full_address)
-    """
     m_code = re.search(r'\b(SPXVN[0-9A-Z]+)\b', page_text)
     code = m_code.group(1) if m_code else 'Không tìm thấy'
 
@@ -228,11 +205,6 @@ def parse_page(page_text: str) -> Tuple[str, str, str]:
 
 
 def split_address(full_addr: str) -> Tuple[str, str]:
-    """
-    Tách địa chỉ in trên vận đơn thành 2 phần:
-    - Phần 1: Địa chỉ khách ghi (Detail address)
-    - Phần 2: Địa chỉ hệ thống chuẩn hóa (System dropdown address)
-    """
     matches = list(PROV_PATTERN.finditer(full_addr))
     if len(matches) >= 2:
         first_m = matches[0]
@@ -253,12 +225,6 @@ def split_address(full_addr: str) -> Tuple[str, str]:
 
 
 def compare_addresses(part1: str, part2: str) -> Tuple[bool, str]:
-    """
-    So sánh 2 phần địa chỉ theo các quy tắc đối soát:
-    1. Chỉ so sánh phần hành chính (xã/phường/thị trấn, quận/huyện/thị xã/thành phố).
-    2. Bỏ qua nếu chỉ khác cấp hành chính nhưng đúng tên (Xã An Khánh vs Phường An Khánh).
-    3. Liệt kê khi lệch tên thật.
-    """
     if not part2 or part1 == part2:
         return True, ""
 
@@ -268,7 +234,6 @@ def compare_addresses(part1: str, part2: str) -> Tuple[bool, str]:
     d1 = list(DISTRICT_PATTERN.finditer(part1))
     d2 = list(DISTRICT_PATTERN.finditer(part2))
 
-    # So sánh Xã / Phường
     if w1 and w2:
         ward1_str = w1[-1].group(0).strip(' ,')
         ward2_str = w2[0].group(0).strip(' ,')
@@ -281,7 +246,6 @@ def compare_addresses(part1: str, part2: str) -> Tuple[bool, str]:
                     reason = f"{ward1_str} vs {ward2_str}, {dist2_str}"
             return False, reason
 
-    # So sánh Quận / Huyện
     if d1 and d2:
         dist1_str = d1[-1].group(0).strip(' ,')
         dist2_str = d2[0].group(0).strip(' ,')
@@ -293,13 +257,6 @@ def compare_addresses(part1: str, part2: str) -> Tuple[bool, str]:
 
 
 def check_pdf_stream(pdf_path: str) -> Generator[Dict[str, Any], None, None]:
-    """
-    Kiểm tra toàn bộ đơn hàng trong file PDF và stream từng kết quả real-time (NDJSON).
-    Yields:
-      - {'type': 'start', 'total': N}
-      - {'type': 'progress', 'current': i, 'total': N, 'percent': P, 'item': {...}}
-      - {'type': 'done', 'total': N, 'matches': M, 'mismatches': K, 'results': [...]}
-    """
     pages = extract_pages_from_pdf(pdf_path)
     total_pages = len(pages)
 
@@ -350,7 +307,6 @@ def check_pdf_stream(pdf_path: str) -> Generator[Dict[str, Any], None, None]:
 
 
 def check_pdf(pdf_path: str) -> List[Dict]:
-    """Kiểm tra toàn bộ đơn hàng trong file PDF và trả về danh sách kết quả đối soát."""
     results = []
     for event in check_pdf_stream(pdf_path):
         if event.get('type') == 'progress' and 'item' in event:

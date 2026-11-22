@@ -21,16 +21,12 @@ from spx_checker import check_pdf, check_pdf_stream
 
 DEFAULT_PORT = int(os.environ.get('PORT', 8765))
 HOST = os.environ.get('HOST', '0.0.0.0')
-MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB max file size
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 UPLOAD_TMP_DIR = os.path.join(tempfile.gettempdir(), 'spx_auditor_uploads')
 os.makedirs(UPLOAD_TMP_DIR, exist_ok=True)
 
 
-def cleanup_zombie_files(max_age_seconds: int = 1800):
-    """
-    Tự động quét và dọn dẹp các file rác (.pdf, .png, .txt) nếu tiến trình trước đó bị crash
-    hoặc ngắt kết nối đột ngột giữa chừng.
-    """
+def cleanup_files(max_age_seconds: int = 1800):
     now = time.time()
     scan_dirs = [UPLOAD_TMP_DIR, tempfile.gettempdir()]
     for d in scan_dirs:
@@ -50,11 +46,10 @@ def cleanup_zombie_files(max_age_seconds: int = 1800):
             pass
 
 
-def zombie_cleanup_worker():
-    """Luồng nền (Daemon) định kỳ chạy mỗi 10 phút để dọn dẹp file tạm quá 30 phút."""
+def cleanup_worker():
     while True:
         time.sleep(600)
-        cleanup_zombie_files(max_age_seconds=1800)
+        cleanup_files(max_age_seconds=1800)
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -568,7 +563,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 
 class SPXRequestHandler(BaseHTTPRequestHandler):
-    timeout = 60  # Ngắt kết nối treo hoặc bot scan mạng sau 60s
+    timeout = 60
 
     def do_GET(self):
         if self.path == '/' or self.path.startswith('/?'):
@@ -592,7 +587,6 @@ class SPXRequestHandler(BaseHTTPRequestHandler):
             except ValueError:
                 length = 0
 
-            # 1. Kiểm tra kích thước file
             if length <= 0:
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -607,7 +601,6 @@ class SPXRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'error': 'Dung lượng file vượt quá giới hạn 100MB'}).encode('utf-8'))
                 return
 
-            # 2. Kiểm tra tên file & định dạng .pdf
             raw_filename = self.headers.get('X-Filename', '')
             filename = unquote(raw_filename).strip()
             if filename and not filename.lower().endswith('.pdf'):
@@ -617,10 +610,8 @@ class SPXRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'error': 'Định dạng file không hợp lệ! Hệ thống chỉ chấp nhận file PDF (.pdf)'}).encode('utf-8'))
                 return
 
-            # Đọc toàn bộ nội dung file
             pdf_bytes = self.rfile.read(length)
 
-            # 3. Kiểm tra Magic Bytes (%PDF-) để chặn tuyệt đối file giả mạo đuôi
             if not pdf_bytes.startswith(b'%PDF-'):
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -628,20 +619,17 @@ class SPXRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({'error': 'Tệp tải lên không phải là file PDF hợp lệ (Magic header signature mismatch)'}).encode('utf-8'))
                 return
 
-            # Lưu vào thư mục tạm an toàn
             with tempfile.NamedTemporaryFile(dir=UPLOAD_TMP_DIR, prefix='spx_upload_', suffix='.pdf', delete=False) as tmp:
                 tmp.write(pdf_bytes)
                 tmp_path = tmp.name
 
             try:
-                # Gửi header NDJSON streaming hỗ trợ Nginx
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/x-ndjson; charset=utf-8')
                 self.send_header('Cache-Control', 'no-cache, no-transform')
-                self.send_header('X-Accel-Buffering', 'no')  # Chống Nginx đệm chunk
+                self.send_header('X-Accel-Buffering', 'no')
                 self.end_headers()
 
-                # Stream từng đơn hàng theo thời gian thực
                 for event in check_pdf_stream(tmp_path):
                     chunk = json.dumps(event, ensure_ascii=False) + '\n'
                     self.wfile.write(chunk.encode('utf-8'))
@@ -666,14 +654,10 @@ class SPXRequestHandler(BaseHTTPRequestHandler):
 
 
 def run_server(host=HOST, port=DEFAULT_PORT):
-    # Dọn dẹp các file rác cũ khi khởi động server
-    cleanup_zombie_files(max_age_seconds=1800)
-
-    # Khởi chạy Daemon dọn rác nền định kỳ mỗi 10 phút
-    cleaner_thread = threading.Thread(target=zombie_cleanup_worker, daemon=True)
+    cleanup_files(max_age_seconds=1800)
+    cleaner_thread = threading.Thread(target=cleanup_worker, daemon=True)
     cleaner_thread.start()
 
-    # Sử dụng ThreadingHTTPServer đa luồng xử lý song song nhiều request
     server = ThreadingHTTPServer((host, port), SPXRequestHandler)
     server.daemon_threads = True
 
