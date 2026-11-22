@@ -8,3 +8,8 @@ services:
     environment:
       - PORT=8765
       - HOST=0.0.0.0
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

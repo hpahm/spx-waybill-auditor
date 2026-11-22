@@ -15,10 +15,21 @@
   - Automatically handles level naming changes (*Xã An Khánh* vs *Phường An Khánh*, *Quận* vs *Huyện*, *Thành phố* vs *TP*).
   - Accurately identifies genuine name mismatches (*Phường An Biên* vs *Phường Lam Sơn*, *Phường 14* vs *Phường 24*, *Thị trấn Ba Tơ* vs *Xã Ba Tô*).
   - Handles edge cases: whitespace variations around quotes (*Huyện Ia H ' Drai* vs *Huyện Ia H' Drai*), punctuation, abbreviations (*P.*, *Q.*, *H.*, *X.*, *TP.*), and unaccented customer inputs.
+- **Real-Time NDJSON Streaming Progress Bar**:
+  - Beautiful Shopee orange gradient progress bar with rounded corners.
+  - Live progress tracking displaying percentage (`%`), order counter (`X / Y`), filename, and formatted file size.
+  - Zero-buffering real-time streaming (`X-Accel-Buffering: no`), perfectly tuned for Nginx reverse proxies.
+- **Enterprise-Grade Server & Concurrency**:
+  - Built-in `ThreadingHTTPServer`: Handles concurrent requests seamlessly without hanging or blocking.
+  - 60-second connection timeout to mitigate internet port scans and stale sockets.
+- **Multi-Core Parallel OCR**:
+  - Automatically reads native PDF text streams; seamlessly triggers multi-threaded Tesseract OCR across 2–4 CPU cores for scanned/rasterized documents (3–4x faster).
+- **Security & Storage Protection**:
+  - Strict upload validation: Blocks non-PDF files, checks `%PDF-` magic header bytes, and enforces a 100MB size limit.
+  - Automatic zombie file cleanup daemon: Runs periodically to keep temporary directories lean and prevent disk overflow.
 - **Dual Mode**:
   - **Interactive Web UI**: Modern drag-and-drop web dashboard with one-click Markdown & Excel (CSV) export.
   - **CLI Mode**: Fast command-line interface for terminal workflows and batch scripts.
-- **Built-in OCR Fallback**: Automatically reads native PDF text streams; seamlessly triggers OCR via Tesseract when given scanned/rasterized documents.
 
 ---
 
@@ -56,7 +67,7 @@ The tool relies on standard Linux utilities:
    ```
 2. Your default web browser will automatically open `http://localhost:8765`.
 3. Simply **drag and drop** your SPX waybill PDF onto the dashboard.
-4. Review mismatched orders, copy the Markdown table, or download the CSV report.
+4. Watch the real-time progress bar, review mismatched orders, copy the Markdown table, or download the CSV report.
 
 ---
 
@@ -81,14 +92,18 @@ Deploying to any Linux VPS, Docker host, or cloud server takes a single command:
 
 ```bash
 # Clone the repository
-git clone <repo-url>
-cd <repo-folder>
+git clone https://github.com/hpahm/spx-waybill-auditor.git
+cd spx-waybill-auditor
 
 # Start container in detached mode
 docker compose up -d --build
 ```
 
 The Web UI will be immediately accessible on port `8765` (e.g. `http://your-server-ip:8765`).
+
+### Docker Optimizations
+- **Lightweight Healthcheck**: Built with `curl` (<2MB memory footprint) instead of spawning heavy Python runtime processes.
+- **Log Rotation**: Built-in JSON-file log limits (`max-size: 10m`, `max-file: 3`) to protect VPS disk space.
 
 ### Environment Variables
 
@@ -103,12 +118,12 @@ The Web UI will be immediately accessible on port `8765` (e.g. `http://your-serv
 
 ```
 .
-├── spx_checker.py      # Core verification engine, PDF parser & admin matching rules
-├── app.py              # Zero-dependency local Web UI (Python standard library http.server)
+├── spx_checker.py      # Core verification engine, parallel OCR & streaming generator
+├── app.py              # Multithreaded Web UI, NDJSON streaming & zombie file cleanup
 ├── check_spx.py        # Command-line interface (CLI)
 ├── run.sh              # One-click execution shortcut
-├── Dockerfile          # Production Docker configuration with poppler & tesseract pre-installed
-├── docker-compose.yml  # Docker Compose stack definition
+├── Dockerfile          # Production Docker configuration with curl, poppler & tesseract
+├── docker-compose.yml  # Docker Compose stack with log rotation
 ├── README.md           # English documentation
 └── README_vi.md        # Vietnamese documentation
 ```

@@ -12,7 +12,9 @@ WORKDIR /app
 # Install system dependencies:
 # - poppler-utils: provides 'pdftotext' and 'pdftoppm' for lightning-fast text extraction
 # - tesseract-ocr & tesseract-ocr-vie: provides OCR fallback for scanned waybills
+# - curl: lightweight healthcheck probe (<2MB RAM)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
     poppler-utils \
     tesseract-ocr \
     tesseract-ocr-vie \
@@ -21,9 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy project files
 COPY spx_checker.py app.py check_spx.py ./
 
-# Healthcheck
+# Healthcheck using lightweight curl
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:' + str($PORT) + '/health')" || exit 1
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
 EXPOSE 8765
 

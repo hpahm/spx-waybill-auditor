@@ -11,7 +11,8 @@ import re
 import subprocess
 import tempfile
 import unicodedata
-from typing import List, Dict, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Dict, Tuple, Generator, Any
 
 # 63 provinces and major aliases across Vietnam
 PROVINCES = [
@@ -145,25 +146,49 @@ def extract_pages_from_pdf(pdf_path: str) -> List[str]:
     return ocr_pdf(pdf_path)
 
 
+def _ocr_single_image(args: Tuple[int, str, str]) -> Tuple[int, str]:
+    """Helper worker chạy Tesseract OCR cho 1 trang ảnh."""
+    idx, img_path, out_base = args
+    try:
+        subprocess.run(
+            ['tesseract', img_path, out_base, '-l', 'vie+eng', '--psm', '6'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+        txt_path = out_base + '.txt'
+        if os.path.exists(txt_path):
+            with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return idx, f.read()
+    except Exception:
+        pass
+    return idx, ''
+
+
 def ocr_pdf(pdf_path: str) -> List[str]:
-    """Fallback OCR sử dụng pdftoppm và tesseract khi PDF không có lớp chữ."""
-    pages = []
+    """
+    Fallback OCR sử dụng pdftoppm và tesseract đa luồng (Process/ThreadPool)
+    tối ưu hóa sử dụng đa nhân CPU khi PDF không có lớp chữ.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         subprocess.run(['pdftoppm', '-png', '-r', '200', pdf_path, os.path.join(tmpdir, 'page')],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         img_files = sorted([f for f in os.listdir(tmpdir) if f.startswith('page-') and f.endswith('.png')])
-        for img_name in img_files:
-            img_path = os.path.join(tmpdir, img_name)
-            out_base = os.path.join(tmpdir, 'ocr_' + img_name)
-            subprocess.run(['tesseract', img_path, out_base, '-l', 'vie+eng', '--psm', '6'],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            txt_path = out_base + '.txt'
-            if os.path.exists(txt_path):
-                with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    pages.append(f.read())
-            else:
-                pages.append('')
-    return pages
+        if not img_files:
+            return []
+
+        # Tận dụng đa nhân CPU (2-4 cores) để chạy OCR song song
+        max_workers = min(4, os.cpu_count() or 2)
+        tasks = [
+            (i, os.path.join(tmpdir, img_name), os.path.join(tmpdir, f'ocr_{i}'))
+            for i, img_name in enumerate(img_files)
+        ]
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            ocr_results = list(executor.map(_ocr_single_image, tasks))
+
+        ocr_results.sort(key=lambda x: x[0])
+        return [text for _, text in ocr_results]
 
 
 def parse_page(page_text: str) -> Tuple[str, str, str]:
@@ -267,17 +292,31 @@ def compare_addresses(part1: str, part2: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def check_pdf(pdf_path: str) -> List[Dict]:
-    """Kiểm tra toàn bộ đơn hàng trong file PDF và trả về danh sách kết quả đối soát."""
+def check_pdf_stream(pdf_path: str) -> Generator[Dict[str, Any], None, None]:
+    """
+    Kiểm tra toàn bộ đơn hàng trong file PDF và stream từng kết quả real-time (NDJSON).
+    Yields:
+      - {'type': 'start', 'total': N}
+      - {'type': 'progress', 'current': i, 'total': N, 'percent': P, 'item': {...}}
+      - {'type': 'done', 'total': N, 'matches': M, 'mismatches': K, 'results': [...]}
+    """
     pages = extract_pages_from_pdf(pdf_path)
+    total_pages = len(pages)
+
+    yield {
+        'type': 'start',
+        'total': total_pages
+    }
+
     results = []
+    mismatches_count = 0
 
     for idx, page_text in enumerate(pages, 1):
         code, name, full_addr = parse_page(page_text)
         part1, part2 = split_address(full_addr)
         is_match, reason = compare_addresses(part1, part2)
 
-        results.append({
+        item = {
             'page': idx,
             'code': code,
             'recipient': name,
@@ -286,31 +325,37 @@ def check_pdf(pdf_path: str) -> List[Dict]:
             'system_address': part2,
             'is_match': is_match,
             'reason': reason
-        })
+        }
+        results.append(item)
+        if not is_match:
+            mismatches_count += 1
 
+        percent = round((idx / total_pages) * 100) if total_pages > 0 else 100
+        yield {
+            'type': 'progress',
+            'current': idx,
+            'total': total_pages,
+            'percent': percent,
+            'item': item
+        }
+
+    matches_count = total_pages - mismatches_count
+    yield {
+        'type': 'done',
+        'total': total_pages,
+        'matches': matches_count,
+        'mismatches': mismatches_count,
+        'results': results
+    }
+
+
+def check_pdf(pdf_path: str) -> List[Dict]:
+    """Kiểm tra toàn bộ đơn hàng trong file PDF và trả về danh sách kết quả đối soát."""
+    results = []
+    for event in check_pdf_stream(pdf_path):
+        if event.get('type') == 'progress' and 'item' in event:
+            results.append(event['item'])
     return results
-
-
-if __name__ == '__main__':
-    import sys
-    if len(sys.argv) < 2:
-        print("Cách dùng: python3 spx_checker.py <duong_dan_file.pdf>")
-        sys.exit(1)
-
-    input_pdf = sys.argv[1]
-    if os.path.exists(input_pdf):
-        print(f"Đang kiểm tra: {input_pdf}...")
-        res = check_pdf(input_pdf)
-        mismatches = [r for r in res if not r['is_match']]
-        print(f"Đã check {len(res)} đơn, {len(res) - len(mismatches)} đơn khớp, {len(mismatches)} đơn lệch.\n")
-        print("| STT | Mã vận đơn (SPXVN...) | Người nhận | Địa chỉ khách ghi | Địa chỉ hệ thống | Lệch ở đâu |")
-        print("|:---:|:---|:---|:---|:---|:---|")
-        for i, m in enumerate(mismatches, 1):
-            print(f"| {i} | {m['code']} | {m['recipient']} | {m['customer_address']} | {m['system_address']} | {m['reason']} |")
-    else:
-        print(f"Lỗi: Không tìm thấy file '{input_pdf}'")
-        sys.exit(1)
-
 
 
 if __name__ == '__main__':
